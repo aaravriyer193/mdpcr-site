@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MDPCR — Multi-Dimensional Point Cloud Reasoning</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #090a0b;
+      --bg-2: #0d0f10;
+      --panel: #121517;
+      --panel-2: #171a1c;
+      --ink: #eceae4;
+      --muted: #7e8489;
+      --faint: rgba(236,234,228,0.46);
+      --line: rgba(236,234,228,0.20);
+      --line-2: rgba(236,234,228,0.10);
+      --accent: #79cbb6;
+      --accent-dim: rgba(121,203,182,0.12);
+      --dash: rgba(236,234,228,0.28);
+      --maxw: 1200px;
+      --ease: cubic-bezier(.22,.61,.36,1);
+      /* Heavy grain SVG */
+      --noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      --noise-fine: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='130' height='130'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.5' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      /* Spatial Grid */
+      --grid: radial-gradient(circle, var(--line-2) 1px, transparent 1px);
+    }
+    
+    /* Strict zero-rounding */
+    * { box-sizing: border-box; margin: 0; padding: 0; border-radius: 0 !important; }
+    html { scroll-behavior: smooth; }
+    
+    body {
+      background: var(--bg); color: var(--ink);
+      font-family: 'DM Sans', sans-serif; font-weight: 400; line-height: 1.6;
+      letter-spacing: -0.01em;
+      -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; overflow-x: hidden;
+    }
+    ::selection { background: var(--accent); color: #06140f; }
+
+    /* ---- Ambient Grid Background ---- */
+    .bg-grid {
+      position: fixed; inset: 0; z-index: -1; pointer-events: none;
+      background-image: var(--grid); background-size: 24px 24px;
+      opacity: 0.6;
+    }
+
+    /* ---- Layered Grain ---- */
+    .grain {
+      position: fixed; inset: -50%; z-index: 9998; pointer-events: none;
+      opacity: .28; mix-blend-mode: overlay;
+      background-image: var(--noise);
+      animation: grainShift 6s steps(6) infinite;
+    }
+    .grain.fine { opacity: .18; mix-blend-mode: soft-light; background-image: var(--noise-fine); animation: grainShift 3.5s steps(5) infinite reverse; }
+    
+    @keyframes grainShift {
+      0%{transform:translate(0,0)} 20%{transform:translate(-4%,3%)} 40%{transform:translate(3%,-2%)}
+      60%{transform:translate(-2%,4%)} 80%{transform:translate(4%,2%)} 100%{transform:translate(0,0)}
+    }
+
+    /* ---- Dim, foggy, noisy media treatment ---- */
+    .media-noise { position: relative; overflow: hidden; }
+    .media-noise::after {
+      content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 3;
+      background-image: var(--noise); background-size: 170px; opacity: .55; mix-blend-mode: overlay;
+    }
+    .fog {
+      position: absolute; inset: -30%; pointer-events: none; z-index: 2; mix-blend-mode: screen; filter: blur(35px);
+      background: radial-gradient(55% 50% at 26% 16%, rgba(150,162,160,.25), transparent 70%),
+                  radial-gradient(50% 48% at 84% 92%, rgba(118,132,130,.18), transparent 72%);
+      animation: fogDrift 20s ease-in-out infinite alternate;
+    }
+    @keyframes fogDrift { 0%{transform:translate(-5%,2%) scale(1.06)} 100%{transform:translate(6%,-5%) scale(1.2)} }
+
+    a { color: inherit; text-decoration: none; }
+    .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 32px; }
+    .mono { font-family: 'DM Mono', monospace; }
+
+    .eyebrow {
+      font-family: 'DM Mono', monospace; font-size: .74rem; letter-spacing: .14em;
+      text-transform: uppercase; color: var(--accent); display: inline-flex; align-items: center; gap: .7em;
+    }
+    .eyebrow::before { content:""; width:5px; height:5px; background:var(--ink); transform:rotate(45deg); flex:0 0 auto; }
+
+    /* ---------- NAV ---------- */
+    header { position: fixed; top: 0; left: 0; right: 0; z-index: 100; transition: background .4s var(--ease), border-color .4s, backdrop-filter .4s; border-bottom: 1px dotted transparent; }
+    header.scrolled { background: rgba(9,10,11,.75); backdrop-filter: blur(24px) saturate(1.2); border-bottom: 1px dotted var(--dash); }
+    nav { display: flex; align-items: center; justify-content: space-between; height: 72px; }
+    .brand { display: flex; align-items: center; gap: 11px; font-weight: 500; letter-spacing: 0; font-size: 1rem; }
+    .brand .mark { position: relative; width: 17px; height: 17px; flex: 0 0 auto; }
+    .brand .mark i { position: absolute; width: 3.6px; height: 3.6px; background: var(--ink); }
+    .brand .mark i:nth-child(1){top:0;left:6.7px} .brand .mark i:nth-child(2){top:6.7px;left:0} .brand .mark i:nth-child(3){top:6.7px;left:13.4px;background:var(--accent); box-shadow: 0 0 6px var(--accent);} .brand .mark i:nth-child(4){top:13.4px;left:6.7px} .brand .mark i:nth-child(5){top:6.7px;left:6.7px;opacity:.4}
+    .navlinks { display: flex; align-items: center; gap: 36px; }
+    .navlinks a { font-size: .88rem; color: var(--muted); transition: color .25s; text-transform: lowercase; font-family: 'DM Mono', monospace; letter-spacing: 0.05em; }
+    .navlinks a:hover { color: var(--accent); }
+    .nav-cta { font-family: 'DM Mono', monospace; font-size: .78rem; color: var(--ink); border: 1px dotted var(--dash); padding: 8px 15px; transition: border-color .25s, background .25s, color .25s; }
+    .nav-cta:hover { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
+    @media(max-width:780px){ .navlinks{display:none} }
+
+    /* ---------- HERO ---------- */
+    .hero { position: relative; min-height: 100vh; display: flex; align-items: center; justify-content: center; text-align: center; overflow: hidden; }
+    
+    .hero-bg { position: absolute; inset: 0; z-index: 0; }
+    .hero-bg img { width: 100%; height: 100%; object-fit: cover; filter: grayscale(1) brightness(0.2) contrast(1.4); }
+    .hero-bg .hero-gr { position: absolute; inset: 0; background: linear-gradient(0deg, var(--bg) 0%, transparent 40%, transparent 60%, var(--bg) 100%); z-index: 2; }
+    
+    #cloud { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: 1; mix-blend-mode: screen; }
+    .hero .vignette { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(110% 80% at 50% 42%, transparent 34%, rgba(9,10,11,.7) 76%, var(--bg) 100%); z-index: 2; }
+    .hero-inner { position: relative; z-index: 3; padding-top: 80px; max-width: 880px; }
+    .hero h1 { font-weight: 400; font-size: clamp(2.6rem, 7vw, 5.7rem); line-height: 1.0; letter-spacing: -.035em; margin: 24px 0 0; }
+    .hero h1 em { font-style: normal; color: var(--accent); font-weight: 500; text-shadow: 0 0 24px rgba(121,203,182,0.3); }
+    .hero p.lead { margin: 28px auto 0; max-width: 54ch; font-size: clamp(1.02rem, 1.4vw, 1.18rem); color: var(--faint); line-height: 1.62; font-weight: 400; }
+    .hero p.lead b { color: var(--ink); font-weight: 500; }
+    
+    .cta-row { display: flex; flex-wrap: wrap; gap: 13px; margin-top: 38px; align-items: center; justify-content: center; }
+    .btn { display: inline-flex; align-items: center; gap: 9px; font-size: .92rem; font-weight: 500; padding: 14px 26px; transition: all .3s var(--ease); font-family: 'DM Mono', monospace; text-transform: uppercase; letter-spacing: 0.05em; }
+    .btn-primary { background: var(--ink); color: #0a0b0c; border: 1px solid var(--ink); box-shadow: 0 0 15px rgba(236,234,228,0.05); }
+    .btn-primary:hover { transform: translateY(-2px); background: #ffffff; box-shadow: 0 0 25px rgba(236,234,228,0.2); }
+    .btn-ghost { color: var(--ink); border: 1px dotted var(--dash); background: rgba(9,10,11,0.5); backdrop-filter: blur(4px); }
+    .btn-ghost:hover { border-color: var(--accent); background: var(--accent-dim); transform: translateY(-2px); color: var(--accent); box-shadow: 0 0 25px rgba(121,203,182,0.1); }
+    .btn .arr { transition: transform .3s var(--ease); }
+    .btn:hover .arr { transform: translate(3px, -3px); }
+
+    /* ---------- SECTION ---------- */
+    section.band { position: relative; padding: 140px 0; border-top: 1px dotted var(--line); background: rgba(9,10,11,0.6); backdrop-filter: blur(10px); }
+    .sec-head { max-width: 720px; }
+    .sec-head.center { margin: 0 auto; text-align: center; }
+    .sec-head h2 { font-weight: 400; font-size: clamp(1.9rem, 4.2vw, 3.1rem); line-height: 1.08; letter-spacing: -.03em; margin-top: 20px; }
+    .sec-head h2 em { font-style: normal; color: var(--accent); font-weight: 500; }
+    .sec-head p { margin-top: 20px; color: var(--faint); max-width: 56ch; font-size: 1.04rem; line-height: 1.66; }
+    .sec-head.center p { margin-left: auto; margin-right: auto; }
+
+    .reveal { opacity: 0; transform: translateY(26px); transition: opacity .9s var(--ease), transform .9s var(--ease); }
+    .reveal.in { opacity: 1; transform: none; }
+    .reveal[data-d="1"]{transition-delay:.07s} .reveal[data-d="2"]{transition-delay:.14s} .reveal[data-d="3"]{transition-delay:.21s} .reveal[data-d="4"]{transition-delay:.28s}
+
+    /* ---------- PROCESS FLOW (Graphical Left→Right) ---------- */
+    .flow { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 46px; margin-top: 64px; position: relative; }
+    .stage { position: relative; display: flex; flex-direction: column; }
+    .viz { position: relative; border: 1px dotted var(--dash); background: #0a0c0d; aspect-ratio: 1/0.92; overflow: hidden; box-shadow: inset 0 0 40px rgba(0,0,0,0.8); }
+    .viz canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; mix-blend-mode: screen; }
+    .viz .stnum { position: absolute; top: 10px; left: 13px; z-index: 3; font-family: 'DM Mono', monospace; font-size: 2.6rem; font-weight: 500; color: rgba(236,234,228,.15); letter-spacing: -.05em; line-height: 1; mix-blend-mode: overlay; }
+    .viz .vlabel { position: absolute; left: 13px; right: 13px; bottom: 11px; z-index: 3; display: flex; justify-content: space-between; align-items: center; font-family: 'DM Mono', monospace; font-size: .7rem; color: var(--muted); letter-spacing: .03em; background: rgba(9,10,11,0.8); padding: 4px 8px; border: 1px dotted var(--line-2); }
+    .viz .vlabel b { color: var(--accent); font-weight: 500; text-shadow: 0 0 8px rgba(121,203,182,0.4); }
+    .viz::after { content: ""; position: absolute; inset: 0; z-index: 2; pointer-events: none; background-image: var(--noise); background-size: 160px; opacity: .35; mix-blend-mode: overlay; }
+    
+    .stage .arrow { position: absolute; top: 42%; right: -34px; transform: translateY(-50%); z-index: 6; font-family: 'DM Mono', monospace; font-size: 1.1rem; color: var(--accent); opacity: .8; animation: pulse 2s infinite alternate; }
+    @keyframes pulse { 0% { opacity: 0.3; transform: translateY(-50%) translateX(-4px); } 100% { opacity: 1; transform: translateY(-50%) translateX(4px); text-shadow: 0 0 10px var(--accent); } }
+    .stage:last-child .arrow { display: none; }
+    
+    .cap { margin-top: 22px; border-top: 1px dotted var(--line); padding-top: 16px; }
+    .cap .ci { font-family: 'DM Mono', monospace; font-size: .72rem; color: var(--accent); letter-spacing: .06em; }
+    .cap h3 { font-weight: 500; font-size: 1.14rem; margin-top: 11px; letter-spacing: -.01em; }
+    .cap p { margin-top: 9px; color: var(--faint); font-size: .95rem; line-height: 1.58; }
+    
+    @media(max-width:840px){
+      .flow { grid-template-columns: 1fr; gap: 64px; }
+      .stage .arrow { top: auto; right: 50%; bottom: -44px; transform: translateX(50%) rotate(90deg); animation: pulseDown 2s infinite alternate; }
+      @keyframes pulseDown { 0% { opacity: 0.3; transform: translateX(50%) rotate(90deg) translateY(-4px); } 100% { opacity: 1; transform: translateX(50%) rotate(90deg) translateY(4px); text-shadow: 0 0 10px var(--accent); } }
+    }
+
+    /* ---------- HOW / DEMO ---------- */
+    .how-grid { display: grid; grid-template-columns: 0.95fr 1.05fr; gap: 64px; margin-top: 72px; align-items: start; }
+    .demo-stick { position: sticky; top: 110px; }
+    .demo-card { position: relative; border: 1px dotted var(--line); overflow: hidden; background: var(--bg-2); aspect-ratio: 1/1; box-shadow: inset 0 0 60px rgba(0,0,0,0.9); }
+    .demo-card::after { content: ""; position: absolute; inset: 0; pointer-events: none; background-image: var(--noise); opacity: 0.2; mix-blend-mode: overlay; z-index: 1; }
+    #demo { width: 100%; height: 100%; display: block; cursor: crosshair; position: relative; z-index: 2; }
+    .demo-hud { position: absolute; top: 0; left: 0; right: 0; display: flex; justify-content: space-between; padding: 16px 18px; font-family: 'DM Mono', monospace; font-size: .72rem; color: var(--muted); letter-spacing: .04em; pointer-events: none; z-index: 3; }
+    .demo-hud b { color: var(--accent); font-weight: 500; }
+    .demo-foot { position: absolute; bottom: 0; left: 0; right: 0; padding: 16px 18px; display: flex; justify-content: space-between; align-items: center; font-family: 'DM Mono', monospace; font-size: .72rem; color: var(--muted); border-top: 1px dotted var(--line-2); background: rgba(13,15,16,0.9); backdrop-filter: blur(5px); z-index: 3; }
+    .demo-btn { pointer-events: auto; cursor: pointer; background: var(--accent-dim); color: var(--accent); border: 1px dotted rgba(121,203,182,.5); padding: 7px 15px; font-family: 'DM Mono', monospace; font-size: .72rem; transition: background .25s, box-shadow .25s; text-transform: uppercase; }
+    .demo-btn:hover { background: rgba(121,203,182,.2); box-shadow: 0 0 15px rgba(121,203,182,0.2); }
+    
+    .steps { display: flex; flex-direction: column; }
+    .step { padding: 28px 0; border-top: 1px dotted var(--line); transition: transform 0.3s ease; }
+    .step:first-child { border-top: none; padding-top: 0; }
+    .step:hover { transform: translateX(8px); }
+    .step .idx { font-family: 'DM Mono', monospace; font-size: .74rem; color: var(--accent); letter-spacing: .06em; }
+    .step h3 { font-weight: 500; font-size: 1.42rem; margin-top: 12px; letter-spacing: -.015em; }
+    .step p { margin-top: 10px; color: var(--faint); font-size: 1rem; line-height: 1.64; max-width: 46ch; }
+    @media(max-width:900px){ .how-grid{grid-template-columns:1fr; gap:42px} .demo-stick{position:static} .demo-card{max-width:430px} }
+
+    /* ---------- PROPERTIES BENTO ---------- */
+    .bento { display: grid; grid-template-columns: repeat(3, 1fr); grid-auto-rows: 1fr; gap: 16px; margin-top: 64px; }
+    .cell {
+      position: relative; border: 1px dotted var(--line); background: var(--panel);
+      padding: 26px; overflow: hidden; min-height: 230px; display: flex; flex-direction: column;
+      transition: border-color .4s var(--ease), background .4s, transform .4s var(--ease);
+    }
+    .cell::before {
+      content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 1;
+      background-image: var(--noise); background-size: 150px; opacity: 0.4; mix-blend-mode: overlay;
+    }
+    .cell > * { position: relative; z-index: 2; }
+    .cell:hover { border-color: rgba(121,203,182,.6); background: var(--panel-2); }
+    .cell .ico { margin-bottom: auto; transition: transform 0.4s var(--ease); }
+    .cell:hover .ico { transform: scale(1.1) translateY(-4px); }
+    .cell .ico svg { display: block; width: 54px; height: 54px; filter: drop-shadow(0 0 10px rgba(121,203,182,0.2)); }
+    .cell h3 { font-weight: 500; font-size: 1.2rem; margin-top: 22px; letter-spacing: -.01em; }
+    .cell p { margin-top: 9px; color: var(--faint); font-size: .95rem; line-height: 1.58; }
+    .cell .tag { position: absolute; top: 24px; right: 24px; font-family: 'DM Mono', monospace; font-size: .68rem; color: var(--accent); border: 1px dotted var(--accent); padding: 4px 8px; background: var(--accent-dim); }
+    
+    .cell.tall { grid-row: span 2; }
+    .cell.wide { grid-column: span 2; }
+    
+    .cell.img { padding: 0; justify-content: flex-end; }
+    .cell.img img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: grayscale(1) brightness(.3) contrast(1.4); transition: transform 1.5s var(--ease), filter 1.5s var(--ease); z-index: 1; }
+    .cell.img:hover img { transform: scale(1.08); filter: grayscale(0.8) brightness(.4) contrast(1.3); }
+    .cell.img .gr { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(9,10,11,.1) 0%, transparent 30%, rgba(9,10,11,.95) 100%); z-index: 2; }
+    .cell.img .txt { position: relative; z-index: 4; padding: 26px; }
+    .cell.img h3 { margin-top: 0; }
+    
+    @media(max-width:840px){
+      .bento { grid-template-columns: 1fr; }
+      .cell.tall, .cell.wide { grid-row: auto; grid-column: auto; }
+      .cell.tall { min-height: 300px; }
+    }
+
+    /* ---------- WHY ---------- */
+    .why { position: relative; border-top: 1px dotted var(--line); }
+    .why-media { position: relative; min-height: 78vh; display: flex; align-items: flex-end; overflow: hidden; }
+    .why-media img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: grayscale(1) brightness(.25) contrast(1.5); z-index: 1; mix-blend-mode: multiply; }
+    .why-media .ov { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(9,10,11,.8) 0%, transparent 26%, rgba(9,10,11,.8) 72%, var(--bg) 100%); z-index: 2; }
+    
+    .why-content-wrapper { position: relative; z-index: 4; width: 100%; }
+    .why-content { padding: 84px 32px; width: 100%; max-width: var(--maxw); margin: 0 auto; }
+    .why-content h2 { font-weight: 400; font-size: clamp(1.8rem, 3.8vw, 2.9rem); line-height: 1.12; letter-spacing: -.03em; max-width: 20ch; margin-top: 18px; }
+    .why-content h2 em { font-style: normal; color: var(--accent); font-weight: 500; }
+    
+    .why-points { display: grid; grid-template-columns: repeat(3, 1fr); gap: 36px; margin-top: 50px; }
+    .why-points .wp { border-top: 1px dotted var(--line); padding-top: 16px; transition: transform 0.3s ease; }
+    .why-points .wp:hover { transform: translateY(-5px); border-top-color: var(--accent); }
+    .why-points .wp .n { font-family: 'DM Mono', monospace; font-size: .74rem; color: var(--accent); background: var(--accent-dim); display: inline-block; padding: 2px 8px; border: 1px dotted var(--accent); }
+    .why-points .wp h4 { font-weight: 500; font-size: 1.12rem; margin-top: 14px; }
+    .why-points .wp p { margin-top: 9px; color: var(--faint); font-size: .94rem; line-height: 1.58; }
+    @media(max-width:760px){ .why-points{grid-template-columns:1fr; gap:24px} }
+
+    /* ---------- FAQ ---------- */
+    .faq-grid { display: grid; grid-template-columns: 0.7fr 1.3fr; gap: 60px; margin-top: 36px; align-items: start; }
+    .faq-list { border-top: 1px dotted var(--line); }
+    .qa { border-bottom: 1px dotted var(--line); transition: background 0.3s ease; }
+    .qa:hover { background: rgba(236,234,228,0.02); }
+    .qa button { width: 100%; background: none; border: none; color: var(--ink); font-family: 'DM Sans', sans-serif; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 24px 16px; text-align: left; font-size: 1.06rem; font-weight: 400; letter-spacing: -.01em; }
+    .qa .pm { position: relative; width: 14px; height: 14px; flex: 0 0 auto; }
+    .qa .pm::before, .qa .pm::after { content: ""; position: absolute; background: var(--accent); transition: transform .35s var(--ease), opacity .35s; }
+    .qa .pm::before { top: 6px; left: 0; width: 14px; height: 2px; }
+    .qa .pm::after { top: 0; left: 6px; width: 2px; height: 14px; }
+    .qa.open .pm::after { transform: scaleY(0); }
+    .qa .ans { max-height: 0; overflow: hidden; transition: max-height .45s var(--ease); }
+    .qa .ans p { padding: 0 16px 26px; color: var(--faint); font-size: .98rem; line-height: 1.66; max-width: 60ch; }
+    @media(max-width:840px){ .faq-grid{grid-template-columns:1fr; gap:30px} }
+
+    /* ---------- CTA ---------- */
+    .cta { position: relative; padding: 160px 0; text-align: center; overflow: hidden; border-top: 1px dotted var(--line); background: var(--bg-2); }
+    #dots { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; }
+    .cta-inner { position: relative; z-index: 2; max-width: 720px; margin: 0 auto; pointer-events: none; }
+    .cta h2 { font-weight: 400; font-size: clamp(2.1rem, 5vw, 3.8rem); line-height: 1.04; letter-spacing: -.035em; margin-top: 22px; }
+    .cta h2 em { font-style: normal; color: var(--accent); font-weight: 500; text-shadow: 0 0 20px rgba(121,203,182,0.2); }
+    .cta p { margin: 24px auto 0; max-width: 50ch; color: var(--faint); font-size: 1.08rem; line-height: 1.64; }
+    
+    .cta .repo { margin-top: 24px; font-family: 'DM Mono', monospace; font-size: .88rem; color: var(--ink); display: inline-flex; align-items: center; gap: 8px; border: 1px dotted var(--accent); padding: 12px 20px; background: rgba(9,10,11,.9); pointer-events: auto; box-shadow: 0 0 15px rgba(121,203,182,0.1); }
+    .cta .repo .cursor { display: inline-block; width: 8px; height: 16px; background: var(--accent); animation: blink 1s step-end infinite; }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+    .cta .cta-row { justify-content: center; pointer-events: auto; margin-top: 32px; }
+
+    /* ---------- FOOTER ---------- */
+    footer { border-top: 1px dotted var(--line); padding: 52px 0 58px; background: var(--bg); position: relative; z-index: 10; }
+    .foot { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 30px; }
+    .foot .mini { font-family: 'DM Mono', monospace; font-size: .74rem; color: var(--muted); line-height: 1.8; letter-spacing: .02em; }
+    .foot .flinks { display: flex; gap: 26px; font-size: .86rem; color: var(--muted); font-family: 'DM Mono', monospace; text-transform: uppercase; }
+    .foot .flinks a:hover { color: var(--accent); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 4px; }
+
+    @media(max-width:560px){ .wrap{padding:0 22px} section.band{padding:92px 0} .cta{padding:110px 0} }
+  </style>
+</head>
+<body>
+<div class="bg-grid"></div>
+<div class="grain"></div>
+<div class="grain fine"></div>
+
+<header id="hdr">
+  <div class="wrap">
+    <nav>
+      <a href="#top" class="brand"><span class="mark"><i></i><i></i><i></i><i></i><i></i></span>MDPCR</a>
+      <div class="navlinks">
+        <a href="#concept">Concept</a>
+        <a href="#how">Architecture</a>
+        <a href="#properties">Properties</a>
+        <a href="#faq">FAQ</a>
+      </div>
+      <a class="nav-cta" href="https://github.com/aaravriyer193/mdpcr" target="_blank" rel="noopener">github ↗</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero" id="top">
+  <div class="hero-bg media-noise">
+    <div class="fog"></div>
+    <img src="https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=2400&auto=format&fit=crop" alt="Abstract dark topology" loading="lazy" />
+    <div class="hero-gr"></div>
+  </div>
+
+  <canvas id="cloud"></canvas>
+  <div class="vignette"></div>
+  
+  <div class="wrap hero-inner">
+    <span class="eyebrow">Multi-Dimensional Point Cloud Reasoning</span>
+    <h1>Thinking that<br />settles <em>into place.</em></h1>
+    <p class="lead">An experimental architecture that drops the transformer entirely. Every token becomes a point in N-dimensional space, the points pull on one another until the cloud reaches equilibrium — and <b>that equilibrium is the answer.</b></p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="#how">Read the architecture</a>
+      <a class="btn btn-ghost" href="https://github.com/aaravriyer193/mdpcr" target="_blank" rel="noopener">View on GitHub <span class="arr">↗</span></a>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="concept">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Watch a thought converge</span>
+      <h2>Reasoning you can <em>see settle,</em> step by step.</h2>
+      <p>The same input enters as scattered points and relaxes toward a stable shape. Each stage is observable — the model isn't guessing the next word, it's finding equilibrium.</p>
+    </div>
+
+    <div class="flow">
+      <div class="stage reveal" data-d="1">
+        <div class="viz">
+          <span class="stnum">01</span>
+          <canvas id="v-scatter"></canvas>
+          <div class="vlabel"><span>cloud</span><b>scattered</b></div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="cap">
+          <div class="ci">INITIAL STATE</div>
+          <h3>Enter as a cloud</h3>
+          <p>Tokens are placed into space all at once. No order, no sequence — just a high-energy field of points waiting to resolve.</p>
+        </div>
+      </div>
+      
+      <div class="stage reveal" data-d="2">
+        <div class="viz">
+          <span class="stnum">02</span>
+          <canvas id="v-relax"></canvas>
+          <div class="vlabel"><span>energy</span><b>relaxing</b></div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="cap">
+          <div class="ci">ITERATION 042</div>
+          <h3>Relax toward order</h3>
+          <p>Points exert force on one another by proximity and density. The system steps downhill, pulling the thought together.</p>
+        </div>
+      </div>
+      
+      <div class="stage reveal" data-d="3">
+        <div class="viz">
+          <span class="stnum">03</span>
+          <canvas id="v-stable"></canvas>
+          <div class="vlabel"><span>delta</span><b>&lt; 1e-4</b></div>
+        </div>
+        <div class="cap">
+          <div class="ci">CONVERGED</div>
+          <h3>Settle into an answer</h3>
+          <p>When motion falls below threshold the cloud has equilibrated. Its final geometric configuration is decoded directly.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="how">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">The mechanism</span>
+      <h2>No sequence. No attention.<br /><em>Just convergence.</em></h2>
+      <p>Instead of reading left to right, MDPCR places the whole input into space and lets it relax. Drag inside the field — perturb the cloud and watch it find equilibrium again.</p>
+    </div>
+
+    <div class="how-grid">
+      <div class="demo-stick reveal">
+        <div class="demo-card">
+          <canvas id="demo"></canvas>
+          <div class="demo-hud"><span>cloud · <b id="ptCount">128</b> pts</span><span>iter <b id="iterCount">0</b></span></div>
+          <div class="demo-foot"><span id="stateLabel">state: equilibrium</span><button class="demo-btn" id="perturb">perturb ⟳</button></div>
+        </div>
+      </div>
+      <div class="steps">
+        <div class="step reveal" data-d="1"><span class="idx">01 / EMBED</span><h3>Tokens become points</h3><p>Each token is projected to a coordinate in N-dimensional space. There is no order, no index, no positional encoding — only position.</p></div>
+        <div class="step reveal" data-d="2"><span class="idx">02 / INFLUENCE</span><h3>Everything pulls on everything</h3><p>Every point exerts force on every other, weighted by spatial proximity and local density. Influence is simultaneous, not directional.</p></div>
+        <div class="step reveal" data-d="3"><span class="idx">03 / ITERATE</span><h3>The cloud relaxes</h3><p>The model applies learned transformations between cloud states, stepping the system toward lower energy. Harder problems simply take more steps.</p></div>
+        <div class="step reveal" data-d="4"><span class="idx">04 / CONVERGE</span><h3>Equilibrium is the answer</h3><p>When motion falls below threshold, the cloud has settled. Its final configuration is decoded directly — no next-token prediction anywhere in the loop.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="properties">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">What's different</span>
+      <h2>A reasoning system with <em>fewer assumptions.</em></h2>
+      <p>By removing the scaffolding of sequence modeling, MDPCR trades familiar machinery for a small set of physical rules.</p>
+    </div>
+
+    <div class="bento">
+      <div class="cell tall img media-noise reveal">
+        <div class="fog"></div>
+        <img src="https://images.unsplash.com/photo-1483728642387-6c3bdd6c93e5?q=80&w=1400&auto=format&fit=crop" alt="Fog over mountains" loading="lazy" />
+        <div class="gr"></div>
+        <div class="txt">
+          <h3>No positional encoding</h3>
+          <p>Meaning lives in geometry. Where a point sits relative to its neighbours <em style="font-style:normal;color:var(--ink)">is</em> its context — nothing is injected to fake an order.</p>
+        </div>
+      </div>
+
+      <div class="cell reveal" data-d="1">
+        <div class="ico" aria-hidden="true">
+          <svg viewBox="0 0 30 30" fill="none"><circle cx="6" cy="15" r="2.4" fill="#79cbb6"/><circle cx="15" cy="8" r="2.4" fill="#eceae4"/><circle cx="24" cy="15" r="2.4" fill="#eceae4"/><circle cx="15" cy="22" r="2.4" fill="#eceae4"/></svg>
+        </div>
+        <span class="tag">no qkv</span>
+        <h3>No linear attention</h3>
+        <p>Interaction is governed by spatial proximity and density fields, not query–key–value projections.</p>
+      </div>
+
+      <div class="cell reveal" data-d="2">
+        <div class="ico" aria-hidden="true">
+          <svg viewBox="0 0 30 30" fill="none"><circle cx="5" cy="15" r="2" fill="#eceae4"/><circle cx="12" cy="15" r="2.3" fill="#eceae4"/><circle cx="20" cy="15" r="2.7" fill="#79cbb6"/><path d="M26 9v12" stroke="#79cbb6" stroke-width="1.4"/></svg>
+        </div>
+        <span class="tag">adaptive</span>
+        <h3>No fixed depth</h3>
+        <p>No preset layer count. It iterates until convergence, so compute scales with difficulty.</p>
+      </div>
+
+      <div class="cell wide img media-noise reveal" data-d="1">
+        <div class="fog" style="animation-delay:-5s"></div>
+        <img src="https://images.unsplash.com/photo-1454496522488-7a8e488e8606?q=80&w=1600&auto=format&fit=crop" alt="Mountains under stars" loading="lazy" />
+        <div class="gr"></div>
+        <div class="txt">
+          <h3>Cloud-to-cloud transformations</h3>
+          <p style="max-width:48ch">The model learns how one configuration of points maps to the next — transformations of state, rather than predictions of the next token.</p>
+        </div>
+      </div>
+
+      <div class="cell reveal" data-d="2">
+        <div class="ico" aria-hidden="true">
+          <svg viewBox="0 0 30 30" fill="none"><circle cx="15" cy="15" r="2.6" fill="#79cbb6"/><circle cx="15" cy="15" r="7" stroke="#eceae4" stroke-width="1.2" opacity=".7"/><circle cx="15" cy="15" r="12" stroke="#eceae4" stroke-width="1" opacity=".35"/></svg>
+        </div>
+        <span class="tag">parallel</span>
+        <h3>Simultaneous influence</h3>
+        <p>All points update together each step — a global relaxation, not a backward-only pass.</p>
+      </div>
+
+      <div class="cell wide reveal" data-d="3">
+        <div class="ico" aria-hidden="true">
+          <svg viewBox="0 0 30 30" fill="none"><path d="M3 22c4 0 4-6 8-6s4 6 8 6 4-9 8-9" stroke="#79cbb6" stroke-width="1.4" fill="none"/><circle cx="27" cy="13" r="2.2" fill="#79cbb6"/></svg>
+        </div>
+        <span class="tag">interpretable</span>
+        <h3>Equilibrium as output</h3>
+        <p style="max-width:54ch">The answer is a stable state, not a sampled string. Convergence is a measurable, inspectable property of the system — you can watch the reasoning settle and know exactly when it's done.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="why" id="why">
+  <div class="why-media media-noise">
+    <div class="fog"></div>
+    <img src="https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?q=80&w=2400&auto=format&fit=crop" alt="Fog settling over a valley" loading="lazy" />
+    <div class="ov"></div>
+    <div class="why-content-wrapper">
+      <div class="why-content">
+        <div class="reveal"><span class="eyebrow">Why it matters</span><h2>If reasoning is spatial, <em>computation should be too.</em></h2></div>
+        <div class="why-points">
+          <div class="wp reveal" data-d="1"><div class="n">A</div><h4>Effort matches difficulty</h4><p>Easy inputs settle in a few steps; hard ones take more. Depth becomes a property of the problem, not a hyperparameter.</p></div>
+          <div class="wp reveal" data-d="2"><div class="n">B</div><h4>You can watch it think</h4><p>Convergence is observable. The trajectory toward equilibrium is a window into the reasoning process itself.</p></div>
+          <div class="wp reveal" data-d="3"><div class="n">C</div><h4>A different bet</h4><p>Most progress refines the transformer. MDPCR asks what happens if we change the substrate entirely.</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="faq">
+  <div class="wrap">
+    <div class="faq-grid">
+      <div class="sec-head reveal" style="max-width:none">
+        <span class="eyebrow">Questions</span>
+        <h2>The honest <em>FAQ.</em></h2>
+        <p>It's early research. Here's what we can and can't say yet.</p>
+      </div>
+      <div class="faq-list reveal" data-d="1">
+        <div class="qa">
+          <button><span>Is this a working model today?</span><span class="pm"></span></button>
+          <div class="ans"><p>Partly. The core convergence dynamics run and the architecture is taking shape, but MDPCR is a v0.1 research preview — not a production model. Expect rough edges, missing pieces, and ideas still being tested.</p></div>
+        </div>
+        <div class="qa">
+          <button><span>How is this different from a diffusion model?</span><span class="pm"></span></button>
+          <div class="ans"><p>Both iterate toward a result, but diffusion denoises a sample under a fixed schedule. MDPCR has no schedule and no fixed step count — points interact by spatial proximity and density, and the system stops when it reaches equilibrium on its own.</p></div>
+        </div>
+        <div class="qa">
+          <button><span>Why remove positional encoding entirely?</span><span class="pm"></span></button>
+          <div class="ans"><p>Because position is the representation. If meaning is encoded in where points sit relative to each other, adding a separate ordering signal is redundant — and it lets the model reason about structure without committing to a single sequence.</p></div>
+        </div>
+        <div class="qa">
+          <button><span>Does adaptive depth make it slow?</span><span class="pm"></span></button>
+          <div class="ans"><p>It depends on the input. Easy problems converge in a handful of steps; hard ones take more. The trade is that compute is spent proportionally to difficulty rather than padded to a fixed depth for every query.</p></div>
+        </div>
+        <div class="qa">
+          <button><span>How can I contribute?</span><span class="pm"></span></button>
+          <div class="ans"><p>Open the repository, read the notes, and pick something — convergence dynamics, decoding, evaluation, or just hard questions. Researchers, engineers, and the stubbornly curious are all welcome.</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="cta" id="contribute">
+  <canvas id="dots"></canvas>
+  <div class="wrap cta-inner">
+    <span class="eyebrow reveal" style="justify-content:center">Open research · v0.1</span>
+    <h2 class="reveal" data-d="1">This is early.<br /><em>Help us build it.</em></h2>
+    <p class="reveal" data-d="2">MDPCR is an early-stage research project — the architecture is taking shape and the questions are wide open. We're looking for contributors: researchers, engineers, and the stubbornly curious.</p>
+    <div class="repo reveal" data-d="3"><span style="color:var(--accent)">$</span> git clone github.com/aaravriyer193/mdpcr<span class="cursor"></span></div>
+    <div class="cta-row reveal" data-d="3"><a class="btn btn-primary" href="https://github.com/aaravriyer193/mdpcr" target="_blank" rel="noopener">Explore the repository <span class="arr">↗</span></a></div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <div class="mini">MDPCR — MULTI-DIMENSIONAL POINT CLOUD REASONING<br />AN EXPERIMENTAL OPEN-SOURCE ARCHITECTURE · 2026<br /><span style="color:var(--faint)">No transformers were used in the making of this model.</span></div>
+    <div class="flinks"><a href="#how">Architecture</a><a href="#properties">Properties</a><a href="https://github.com/aaravriyer193/mdpcr" target="_blank" rel="noopener">GitHub ↗</a></div>
+  </div>
+</footer>
+
+<script>
+/* nav scrolled */
+const hdr=document.getElementById('hdr');
+addEventListener('scroll',() => { hdr.classList.toggle('scrolled',scrollY>40) }, {passive:true});
+
+/* reveal */
+const io = new IntersectionObserver((es)=>{
+  es.forEach(e=>{ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } })
+}, {threshold:0.14, rootMargin:'0px 0px -8% 0px'});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+
+/* FAQ accordion */
+document.querySelectorAll('.qa button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const qa=btn.parentElement, ans=qa.querySelector('.ans'), open=qa.classList.contains('open');
+    document.querySelectorAll('.qa.open').forEach(o=>{o.classList.remove('open');o.querySelector('.ans').style.maxHeight=null});
+    if(!open){qa.classList.add('open');ans.style.maxHeight=ans.scrollHeight+'px'}
+  });
+});
+
+/* ============ HERO POINT CLOUD ============ */
+(function(){
+  const cv=document.getElementById('cloud'), ctx=cv.getContext('2d');
+  let W, H, DPR, pts=[], mouse={x:-1e4,y:-1e4,active:false};
+  const PAL={pt:'236,234,228',acc:'121,203,182'};
+  function resize(){
+    DPR=Math.min(devicePixelRatio||1,2); W=cv.clientWidth; H=cv.clientHeight; 
+    cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0); init();
+  }
+  function init(){
+    const n=Math.round(Math.min(150,Math.max(70,W*H/9000))); pts=[];
+    for(let i=0;i<n;i++){
+      pts.push({x:Math.random()*W,y:Math.random()*H,vx:(Math.random()-.5)*.18,vy:(Math.random()-.5)*.18,r:Math.random()*1.5+.6,hx:Math.random()*W,hy:Math.random()*H,ph:Math.random()*Math.PI*2,sp:Math.random()*.0006+.0002});
+    }
+  }
+  function frame(t){
+    ctx.clearRect(0,0,W,H);
+    const link=Math.min(150,W/9), link2=link*link;
+    for(let i=0;i<pts.length;i++){
+      const p=pts[i];
+      const tx=p.hx+Math.cos(t*p.sp+p.ph)*46, ty=p.hy+Math.sin(t*p.sp*1.3+p.ph)*46;
+      p.vx+=(tx-p.x)*0.00045; p.vy+=(ty-p.y)*0.00045;
+      for(let j=i+1;j<pts.length;j++){
+        const q=pts[j], dx=q.x-p.x, dy=q.y-p.y, d2=dx*dx+dy*dy;
+        if(d2<link2&&d2>0.01){
+          const d=Math.sqrt(d2), f=(1-d/link), pull=d>34?f*0.0016:-(1-d/34)*0.004, ux=dx/d, uy=dy/d;
+          p.vx+=ux*pull; p.vy+=uy*pull; q.vx-=ux*pull; q.vy-=uy*pull;
+          ctx.strokeStyle='rgba('+PAL.acc+','+(f*0.28).toFixed(3)+')'; ctx.lineWidth=0.6;
+          ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(q.x,q.y);ctx.stroke();
+        }
+      }
+      if(mouse.active){
+        const dx=mouse.x-p.x, dy=mouse.y-p.y, d2=dx*dx+dy*dy, R=210;
+        if(d2<R*R){ const d=Math.sqrt(d2)||1, f=(1-d/R); p.vx+=(dx/d)*f*0.06; p.vy+=(dy/d)*f*0.06; }
+      }
+      p.vx*=0.92; p.vy*=0.92; p.x+=p.vx; p.y+=p.vy;
+      if(p.x<0){p.x=0;p.vx*=-.5} if(p.x>W){p.x=W;p.vx*=-.5} if(p.y<0){p.y=0;p.vy*=-.5} if(p.y>H){p.y=H;p.vy*=-.5}
+      const sp=Math.hypot(p.vx,p.vy), glow=Math.min(1,sp*1.6);
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,7); ctx.fillStyle='rgba('+PAL.pt+','+(0.5+glow*0.5).toFixed(3)+')'; ctx.fill();
+      if(glow>0.2){ ctx.beginPath(); ctx.arc(p.x,p.y,p.r+glow*2.4,0,7); ctx.fillStyle='rgba('+PAL.acc+','+(glow*0.16).toFixed(3)+')'; ctx.fill(); }
+    }
+    requestAnimationFrame(frame);
+  }
+  const hero=document.querySelector('.hero');
+  hero.addEventListener('pointermove',e=>{const r=cv.getBoundingClientRect();mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top;mouse.active=true;});
+  hero.addEventListener('pointerleave',()=>mouse.active=false);
+  addEventListener('resize',resize); resize(); requestAnimationFrame(frame);
+})();
+
+/* ============ STAGE VISUALISERS (SCATTER, RELAX, STABLE) ============ */
+(function(){
+  function setupViz(id, drawFn) {
+    const cv = document.getElementById(id);
+    if(!cv) return;
+    const ctx = cv.getContext('2d');
+    let W, H;
+    const pts = [];
+    
+    function resize(){
+      const dpr = Math.min(devicePixelRatio||1,2);
+      W = cv.clientWidth; H = cv.clientHeight;
+      cv.width = W * dpr; cv.height = H * dpr;
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+    }
+    
+    // Init random points for all
+    for(let i=0; i<45; i++) {
+      pts.push({
+        x: Math.random(), y: Math.random(), 
+        vx: (Math.random()-.5)*0.02, vy: (Math.random()-.5)*0.02,
+        phase: Math.random() * Math.PI * 2
+      });
+    }
+    
+    function frame(t) {
+      ctx.clearRect(0, 0, W, H);
+      drawFn(ctx, W, H, pts, t);
+      requestAnimationFrame(frame);
+    }
+    
+    addEventListener('resize', resize);
+    resize();
+    requestAnimationFrame(frame);
+  }
+
+  const INK = '236,234,228', ACC = '121,203,182';
+
+  // 1: Scattered (Chaotic jitter)
+  setupViz('v-scatter', (ctx, W, H, pts, t) => {
+    ctx.fillStyle = `rgba(${INK}, 0.5)`;
+    pts.forEach(p => {
+      const px = (p.x * W) + Math.cos(t*0.005 + p.phase)*10;
+      const py = (p.y * H) + Math.sin(t*0.007 + p.phase)*10;
+      ctx.beginPath(); ctx.arc(px, py, 1.5, 0, 7); ctx.fill();
+    });
+  });
+
+  // 2: Relaxing (Forming clusters with faint links)
+  setupViz('v-relax', (ctx, W, H, pts, t) => {
+    const cx = W/2, cy = H/2;
+    pts.forEach((p, i) => {
+      p.x += (0.5 - p.x) * 0.001 + Math.cos(t*0.001+i)*0.002;
+      p.y += (0.5 - p.y) * 0.001 + Math.sin(t*0.001+i)*0.002;
+      const px = p.x * W, py = p.y * H;
+      
+      pts.slice(i+1).forEach(q => {
+        const qx = q.x*W, qy = q.y*H;
+        const d = Math.hypot(px-qx, py-qy);
+        if(d < 50) {
+          ctx.strokeStyle = `rgba(${ACC}, ${(1-d/50)*0.3})`;
+          ctx.lineWidth = 0.8;
+          ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(qx, qy); ctx.stroke();
+        }
+      });
+      ctx.fillStyle = `rgba(${ACC}, 0.8)`;
+      ctx.beginPath(); ctx.arc(px, py, 1.8, 0, 7); ctx.fill();
+    });
+  });
+
+  // 3: Stable (Perfect geometry/ring)
+  setupViz('v-stable', (ctx, W, H, pts, t) => {
+    const cx = W/2, cy = H/2, R = Math.min(W,H)*0.35;
+    const count = 24;
+    for(let i=0; i<count; i++) {
+      const ang = (i/count) * Math.PI * 2 + (t*0.0002);
+      const px = cx + Math.cos(ang)*R;
+      const py = cy + Math.sin(ang)*R;
+      
+      for(let j=1; j<=3; j++) {
+        const tang = ((i+j)%count / count) * Math.PI * 2 + (t*0.0002);
+        ctx.strokeStyle = `rgba(${ACC}, 0.4)`;
+        ctx.lineWidth = 0.5;
+        ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(cx + Math.cos(tang)*R, cy + Math.sin(tang)*R); ctx.stroke();
+      }
+      ctx.fillStyle = `rgba(${INK}, 0.9)`;
+      ctx.beginPath(); ctx.arc(px, py, 2, 0, 7); ctx.fill();
+    }
+  });
+})();
+
+/* ============ CONVERGENCE DEMO ============ */
+(function(){
+  const cv=document.getElementById('demo'), ctx=cv.getContext('2d');
+  const iterEl=document.getElementById('iterCount'), stateEl=document.getElementById('stateLabel'), ptEl=document.getElementById('ptCount');
+  let W, H, DPR, pts=[], targets=[], iter=0, settled=true, drag={a:false,x:0,y:0};
+  const N=128; ptEl.textContent=N; const ACC='121,203,182', INK='236,234,228';
+  
+  function resize(){
+    DPR=Math.min(devicePixelRatio||1,2); W=cv.clientWidth; H=cv.clientHeight;
+    cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+    buildTargets();
+    if(!pts.length){ pts=targets.map(t=>({x:t.x, y:t.y, vx:0, vy:0})); }
+  }
+  
+  function buildTargets(){
+    targets=[]; const cx=W/2, cy=H/2, base=Math.min(W,H);
+    for(let i=0;i<N;i++){
+      const ring=i%3, rad=base*(0.12+ring*0.13), ang=(i/N)*Math.PI*2*3+ring*0.7;
+      targets.push({x:cx+Math.cos(ang)*rad, y:cy+Math.sin(ang)*rad});
+    }
+  }
+  
+  function perturb(s){
+    settled=false; iter=0;
+    for(const p of pts){
+      p.x+=(Math.random()-.5)*W*s; p.y+=(Math.random()-.5)*H*s;
+      p.vx=(Math.random()-.5)*2; p.vy=(Math.random()-.5)*2;
+    }
+  }
+  
+  function frame(){
+    ctx.clearRect(0,0,W,H); let moving=0; const L=Math.min(80,W/5), L2=L*L;
+    
+    for(let i=0;i<pts.length;i++){
+      for(let j=i+1;j<pts.length;j++){
+        const dx=pts[j].x-pts[i].x, dy=pts[j].y-pts[i].y, d2=dx*dx+dy*dy;
+        if(d2<L2){
+          const a=(1-Math.sqrt(d2)/L)*0.2;
+          ctx.strokeStyle='rgba('+ACC+','+a.toFixed(3)+')'; ctx.lineWidth=0.5;
+          ctx.beginPath(); ctx.moveTo(pts[i].x,pts[i].y); ctx.lineTo(pts[j].x,pts[j].y); ctx.stroke();
+        }
+      }
+    }
+    
+    for(let i=0;i<pts.length;i++){
+      const p=pts[i], t=targets[i];
+      p.vx+=(t.x-p.x)*0.012; p.vy+=(t.y-p.y)*0.012;
+      
+      if(drag.a){
+        const dx=p.x-drag.x, dy=p.y-drag.y, d=Math.hypot(dx,dy)||1, R=120;
+        if(d<R){ const f=(1-d/R); p.vx+=(dx/d)*f*3.4; p.vy+=(dy/d)*f*3.4; settled=false; }
+      }
+      
+      p.vx*=0.88; p.vy*=0.88; p.x+=p.vx; p.y+=p.vy;
+      const sp=Math.hypot(p.vx,p.vy); if(sp>0.12) moving++;
+      const glow=Math.min(1,sp*0.8);
+      
+      ctx.beginPath(); ctx.arc(p.x,p.y,1.7,0,7); ctx.fillStyle='rgba('+INK+','+(0.55+glow*0.45).toFixed(3)+')'; ctx.fill();
+      if(glow>0.25){ ctx.beginPath(); ctx.arc(p.x,p.y,1.7+glow*3,0,7); ctx.fillStyle='rgba('+ACC+','+(glow*0.2).toFixed(3)+')'; ctx.fill(); }
+    }
+    
+    if(!settled){
+      iter++; iterEl.textContent=iter;
+      if(moving<3 && !drag.a){ settled=true; stateEl.textContent='state: equilibrium'; stateEl.style.color=''; }
+      else { stateEl.textContent='state: converging…'; stateEl.style.color='#79cbb6'; }
+    }
+    requestAnimationFrame(frame);
+  }
+  
+  function pos(e){ const r=cv.getBoundingClientRect(); return{x:e.clientX-r.left, y:e.clientY-r.top}; }
+  
+  cv.addEventListener('pointerdown',e=>{ drag.a=true; const p=pos(e); drag.x=p.x; drag.y=p.y; cv.setPointerCapture(e.pointerId); });
+  cv.addEventListener('pointermove',e=>{ if(drag.a){ const p=pos(e); drag.x=p.x; drag.y=p.y; } });
+  cv.addEventListener('pointerup',()=>drag.a=false);
+  cv.addEventListener('pointerleave',()=>drag.a=false);
+  
+  document.getElementById('perturb').addEventListener('click',()=>perturb(0.5));
+  addEventListener('resize',resize); resize(); requestAnimationFrame(frame);
+  
+  new IntersectionObserver((es,o)=>{
+    es.forEach(e=>{ if(e.isIntersecting){ perturb(0.42); o.disconnect(); } })
+  }, {threshold:.4}).observe(cv);
+})();
+
+/* ============ SWARM DOT FIELD (CTA) ============ */
+(function(){
+  const cv=document.getElementById('dots'), ctx=cv.getContext('2d');
+  let W, H, DPR, items=[], mouse={x:-1000, y:-1000, active:false};
+  
+  function resize(){
+    DPR=Math.min(devicePixelRatio||1,2); W=cv.clientWidth; H=cv.clientHeight;
+    cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+    const n=Math.round(W*H/4500); items=[];
+    for(let i=0;i<n;i++){
+      items.push({
+        x:Math.random()*W, y:Math.random()*H, 
+        len:Math.random()*5+2, ang:Math.random()*Math.PI, 
+        vy:Math.random()*.08+.02, vx:(Math.random()-.5)*.05, 
+        a:Math.random()*.5+.15, z:Math.random()*.8+.2
+      });
+    }
+  }
+  
+  function frame(){
+    ctx.clearRect(0,0,W,H);
+    for(const it of items){
+      it.x += it.vx; 
+      it.y += it.vy;
+      
+      if(it.y > H+20) it.y = -20; 
+      if(it.y < -20) it.y = H+20; 
+      if(it.x > W+20) it.x = -20; 
+      if(it.x < -20) it.x = W+20;
+
+      let drawX = it.x;
+      let drawY = it.y;
+      
+      if(mouse.active) {
+        const dx = mouse.x - it.x;
+        const dy = mouse.y - it.y;
+        const dist = Math.hypot(dx, dy);
+        const maxD = 320 * it.z;
+        
+        if(dist < maxD) {
+          const pull = Math.pow(1 - dist/maxD, 2);
+          drawX += dx * pull * 0.4;
+          drawY += dy * pull * 0.4;
+          
+          ctx.strokeStyle = `rgba(121,203,182,${Math.min(1, it.a + pull*0.6)})`;
+          ctx.lineWidth = 1.4 + pull * 1.5;
+        } else {
+          ctx.strokeStyle = `rgba(121,203,182,${it.a*0.7})`;
+          ctx.lineWidth = 1.4;
+        }
+      } else {
+         ctx.strokeStyle = `rgba(121,203,182,${it.a*0.7})`;
+         ctx.lineWidth = 1.4;
+      }
+
+      const lineDx = Math.cos(it.ang)*it.len;
+      const lineDy = Math.sin(it.ang)*it.len;
+      
+      ctx.lineCap = 'square';
+      ctx.beginPath(); 
+      ctx.moveTo(drawX - lineDx/2, drawY - lineDy/2); 
+      ctx.lineTo(drawX + lineDx/2, drawY + lineDy/2); 
+      ctx.stroke();
+    }
+    requestAnimationFrame(frame);
+  }
+  
+  const sec=document.getElementById('contribute');
+  sec.addEventListener('pointermove', e => {
+    const r = cv.getBoundingClientRect();
+    mouse.x = e.clientX - r.left;
+    mouse.y = e.clientY - r.top;
+    mouse.active = true;
+  });
+  sec.addEventListener('pointerleave', () => mouse.active = false);
+  
+  addEventListener('resize',resize); resize(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
